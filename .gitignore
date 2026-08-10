@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+*.egg-info/
+
+# Env
+.env
+
+# Node
+node_modules/
+dist/
+
+# Vector index / build artifacts
+backend/data/index/
+
+# OS
+.DS_Store
