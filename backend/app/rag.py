@@ -32,7 +32,6 @@ LLM_PROVIDER = os.getenv("LLM_PROVIDER", "auto")
 
 def load_metadata() -> list[dict]:
     if not METADATA_FILE.exists():
-        # Auto-trigger ingestion if index doesn't exist yet
         from app.ingest import run_ingestion
         run_ingestion()
 
@@ -52,7 +51,6 @@ def score_text_relevance(question: str, text: str) -> float:
     matches = q_words.intersection(t_words)
     score = len(matches) / len(q_words)
 
-    # Bonus for exact phrases
     q_clean = question.lower().strip()
     if q_clean in text.lower():
         score += 0.5
@@ -82,7 +80,6 @@ def retrieve_chunks(question: str, top_k: int = TOP_K) -> list[dict]:
         except Exception as e:
             print(f"FAISS search fallback: {e}")
 
-    # NumPy / TF-IDF Keyword Matcher fallback
     scored_chunks = []
     for chunk in metadata:
         s = score_text_relevance(question, chunk["text"] + " " + (chunk.get("section") or ""))
@@ -96,9 +93,16 @@ def retrieve_chunks(question: str, top_k: int = TOP_K) -> list[dict]:
 
 
 def call_llm(system_prompt: str, user_prompt: str) -> dict:
+    groq_key = os.getenv("GROQ_API_KEY") or (os.getenv("OPENAI_API_KEY") if os.getenv("OPENAI_API_KEY", "").startswith("gsk_") else None)
     gemini_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-    openai_key = os.getenv("OPENAI_API_KEY")
+    openai_key = os.getenv("OPENAI_API_KEY") if not os.getenv("OPENAI_API_KEY", "").startswith("gsk_") else None
     anthropic_key = os.getenv("ANTHROPIC_API_KEY")
+
+    if groq_key or LLM_PROVIDER == "groq":
+        try:
+            return _call_groq(system_prompt, user_prompt, groq_key or os.getenv("GROQ_API_KEY"))
+        except Exception as e:
+            print(f"Groq API call failed: {e}")
 
     if gemini_key or LLM_PROVIDER == "gemini":
         try:
@@ -118,8 +122,26 @@ def call_llm(system_prompt: str, user_prompt: str) -> dict:
         except Exception as e:
             print(f"Anthropic API call failed: {e}")
 
-    # Smart local fallback when no external LLM key is configured
     return _local_extractive_answer(user_prompt)
+
+
+def _call_groq(system_prompt: str, user_prompt: str, api_key: str) -> dict:
+    from openai import OpenAI
+    client = OpenAI(
+        base_url="https://api.groq.com/openai/v1",
+        api_key=api_key,
+    )
+    model = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+    response = client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        response_format={"type": "json_object"},
+        temperature=0,
+    )
+    return _parse_json_response(response.choices[0].message.content)
 
 
 def _call_gemini(system_prompt: str, user_prompt: str, api_key: str) -> dict:
@@ -168,7 +190,6 @@ def _call_openai(system_prompt: str, user_prompt: str) -> dict:
 
 def _local_extractive_answer(user_prompt: str) -> dict:
     """Smart local fallback answer generator."""
-    # Extract excerpts from prompt
     excerpts = re.findall(r"\[Excerpt \d+\]\nSource: ([^\n]+)\nSection: ([^\n]+)\n\n([\s\S]+?)(?=\n\[Excerpt|\Z)", user_prompt)
     if not excerpts:
         return {
